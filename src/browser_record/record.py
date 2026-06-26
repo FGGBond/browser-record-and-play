@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
 # browser-harness internals
@@ -27,7 +26,10 @@ from browser_harness.admin import ensure_daemon, NAME
 STYLE = Style.from_dict({
     "prompt":        "#00aaff bold",
     "prompt-arrow":  "#666666",
+    "bottom-toolbar": "bg:#1a1a1a #888888",
 })
+
+INTERNAL = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
 
 
 # ── ipc helpers ──────────────────────────────────────────────────────────────
@@ -80,22 +82,25 @@ def _default_output_dir():
     return d
 
 
-def _print_tab_summary():
-    """Print active tab count and up to 3 domains, marking the attached tab."""
+def _get_tabs():
+    """Return (pages, attached_id). pages is a list of targetInfo dicts for real tabs."""
     try:
         targets = _send({"method": "Target.getTargets", "params": {}}).get("result", {}).get("targetInfos", [])
         current = _send({"meta": "current_tab"})
         attached_id = current.get("targetId")
     except Exception:
-        return
-
-    internal = ("chrome://", "chrome-untrusted://", "devtools://", "chrome-extension://", "about:")
+        return [], None
     pages = [t for t in targets
-             if t.get("type") == "page" and not t.get("url", "").startswith(internal)]
+             if t.get("type") == "page" and not t.get("url", "").startswith(INTERNAL)]
+    return pages, attached_id
+
+
+def _print_tab_summary():
+    """Print active tab count and up to 3 domains, marking the attached tab."""
+    pages, attached_id = _get_tabs()
     total = len(pages)
     if total == 0:
         return
-
     print(f"  {total} active tab{'s' if total != 1 else ''}:")
     for t in pages[:3]:
         domain = _hostname(t.get("url", ""))
@@ -240,17 +245,6 @@ class Recorder:
 
 # ── async interactive loop ────────────────────────────────────────────────────
 
-async def _live_printer(rec: Recorder, stop_event: asyncio.Event):
-    """Prints the live counter every 300ms above the prompt via patch_stdout."""
-    prev = -1
-    while not stop_event.is_set():
-        n = rec.total
-        if n != prev:
-            print(f"\r\033[K  [live] {n} requests", flush=True)
-            prev = n
-        await asyncio.sleep(0.3)
-
-
 async def _run_async(output_dir: Path):
     rec = Recorder()
     rec.start()
@@ -259,38 +253,49 @@ async def _run_async(output_dir: Path):
     _print_tab_summary()
     print('  输入 "done" 或 "stop" 结束录制\n')
 
-    session = PromptSession()
-    stop_live = asyncio.Event()
+    session = PromptSession(refresh_interval=0.3)
     step_count = 0
 
-    with patch_stdout():
-        asyncio.create_task(_live_printer(rec, stop_live))
+    def toolbar():
+        pages, attached_id = _get_tabs()
+        total = len(pages)
+        domains = []
+        for t in pages[:3]:
+            d = _hostname(t.get("url", ""))
+            if t.get("targetId") == attached_id:
+                d = f"[{d}]"
+            domains.append(d)
+        if total > 3:
+            domains.append(f"+{total - 3}")
+        tab_str = f"  tabs: {', '.join(domains)}" if domains else ""
+        return HTML(f"  [live] <b>{rec.total}</b> requests{tab_str}")
 
-        try:
-            while True:
-                try:
-                    line = await session.prompt_async(
-                        HTML("<prompt>描述已完成的操作</prompt> <prompt-arrow"
-                             ">>>> </prompt-arrow>"),
-                        style=STYLE,
-                    )
-                except (EOFError, KeyboardInterrupt):
-                    print("\n中断录制，保存已有内容...")
-                    break
+    try:
+        while True:
+            try:
+                line = await session.prompt_async(
+                    HTML("<prompt>描述已完成的操作</prompt> <prompt-arrow"
+                         ">>>> </prompt-arrow>"),
+                    style=STYLE,
+                    bottom_toolbar=toolbar,
+                )
+            except (EOFError, KeyboardInterrupt):
+                print("\n中断录制，保存已有内容...")
+                break
 
-                text = line.strip()
-                if not text:
-                    continue
-                if text.lower() in ("done", "stop"):
-                    break
+            text = line.strip()
+            if not text:
+                continue
+            if text.lower() in ("done", "stop"):
+                break
 
-                idx, count, elapsed = rec.mark_step(text)
-                step_count += 1
-                print(f'\n✓ MARKED STEP {idx} @ {_fmt_elapsed(elapsed)} "{text}"')
-                print(f"  └─ {count} requests recorded\n")
+            idx, count, elapsed = rec.mark_step(text)
+            step_count += 1
+            print(f'\n✓ MARKED STEP {idx} @ {_fmt_elapsed(elapsed)} "{text}"')
+            print(f"  └─ {count} requests recorded\n")
 
-        finally:
-            stop_live.set()
+    finally:
+        pass
 
     data = rec.finish()
     tail_count = len(data["tail"]["requests"])
