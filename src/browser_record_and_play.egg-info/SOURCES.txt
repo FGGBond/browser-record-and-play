@@ -1,9 +1,0 @@
-pyproject.toml
-src/browser_record/__init__.py
-src/browser_record/record.py
-src/browser_record_and_play.egg-info/PKG-INFO
-src/browser_record_and_play.egg-info/SOURCES.txt
-src/browser_record_and_play.egg-info/dependency_links.txt
-src/browser_record_and_play.egg-info/entry_points.txt
-src/browser_record_and_play.egg-info/requires.txt
-src/browser_record_and_play.egg-info/top_level.txt
