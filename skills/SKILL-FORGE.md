@@ -58,96 +58,37 @@ data = json.loads(open("recording_xxx.json").read())
 
 ### Step 3：分析鉴权方式
 
-检查录制请求头，识别鉴权类型，按优先级：
+检查录制请求头，识别鉴权类型：
 
 **类型 A — Cookie 鉴权**（请求头含 `Cookie:`）
 
-这是最常见的内网/企业系统鉴权方式，对应 taishan-sql 的 `browser_cookie3` 模式：
-- 确认 cookie 所属域名（如 `jagile.jd.com`）
-- 记录关键 cookie 名称（忽略 `_ga` `_gid` 等 analytics cookie）
-- **生成 `auth.py` 时使用 `browser_cookie3` 从本地浏览器读取**，不要求用户手动输入
+最常见于内网/企业系统。记录 cookie 所属域名（如 `jagile.jd.com`），生成的代码直接使用
+`browser_record.auth`，**无需复制任何鉴权代码**：
+
+```python
+from browser_record.auth import auth_headers
+
+# 传入录制中识别出的域名，自动从本地 Edge/Chrome 读取 cookie，缓存 4 小时
+headers = auth_headers("jagile.jd.com")
+```
 
 **类型 B — Bearer Token**（请求头含 `Authorization: Bearer ...`）
 
-- 确认 token 来源：是否有某个 `POST /login` 或 `/auth` 请求返回了 token
-- 如果有登录请求：生成 `auth.py` 包含 `login(username, password)` 函数
-- 如果 token 来源不明（如 SSO）：生成 `auth.py` 读取环境变量 `TOKEN`
+- 若有 `POST /login` 返回 token：生成 `login(username, password)` 函数，token 存内存传递
+- 若 token 来源为 SSO 且无法通过请求复现：改用 cookie 鉴权（B 类系统通常也同时带 cookie）
 
-**类型 C — API Key**（请求头含 `X-Api-Key` / `X-Token` 等）
+**类型 C — API Key**（请求头含 `X-Api-Key` 等）
 
-- 从录制 headers 提取 key 名称
-- 生成 `auth.py` 读取对应环境变量
+读取环境变量：`os.environ.get("API_KEY")` 或 `os.environ.get("X_API_KEY")`
 
-**Cookie 鉴权的 auth.py 模板（参考 taishan-sql 实现）：**
+---
 
-```python
-"""auth.py — 从本地浏览器读取 cookie，本地缓存 4 小时。"""
-import json, os, time
-from pathlib import Path
+**鉴权验证命令**（生成工具后用户可用来排查问题）：
 
-import browser_cookie3
-
-COOKIE_DOMAIN = "example.jd.com"        # 从录制中提取的域名
-CACHE_PATH = Path.home() / ".config" / "{tool_name}" / "auth-session.json"
-CACHE_TTL = 4 * 3600                     # 4 小时
-
-_process_cache: dict = {}
-
-
-def _load_from_browser() -> str:
-    """从 Edge/Chrome 本地数据库读取 cookie 字符串。"""
-    for loader in (browser_cookie3.edge, browser_cookie3.chrome):
-        try:
-            jar = loader(domain_name=COOKIE_DOMAIN)
-            pairs = [f"{c.name}={c.value}" for c in jar if COOKIE_DOMAIN in c.domain]
-            if pairs:
-                return "; ".join(pairs)
-        except Exception:
-            continue
-    raise RuntimeError(
-        f"未能从浏览器读取 {COOKIE_DOMAIN} 的 cookie。\n"
-        "请先在浏览器中登录，然后重试。\n"
-        "支持的浏览器：Edge、Chrome（需已登录且 cookie 未过期）"
-    )
-
-
-def _cache_read() -> dict:
-    try:
-        return json.loads(CACHE_PATH.read_text())
-    except (FileNotFoundError, ValueError):
-        return {}
-
-
-def _cache_write(data: dict):
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(json.dumps(data))
-    try:
-        os.chmod(CACHE_PATH, 0o600)
-    except OSError:
-        pass
-
-
-def get_cookie_header(refresh: bool = False) -> str:
-    """获取 cookie header 字符串，优先使用缓存。"""
-    if not refresh:
-        if _process_cache.get("cookie_header") and time.time() < _process_cache.get("expires_at", 0):
-            return _process_cache["cookie_header"]
-        cache = _cache_read()
-        if cache.get("cookie_header") and time.time() < cache.get("expires_at", 0):
-            _process_cache.update(cache)
-            return cache["cookie_header"]
-
-    cookie_header = _load_from_browser()
-    expires_at = time.time() + CACHE_TTL
-    entry = {"cookie_header": cookie_header, "expires_at": expires_at}
-    _process_cache.update(entry)
-    _cache_write(entry)
-    return cookie_header
-
-
-def auth_headers(refresh: bool = False) -> dict:
-    """返回包含 Cookie 的 headers dict，可直接传给 httpx。"""
-    return {"Cookie": get_cookie_header(refresh=refresh)}
+```bash
+bh-auth check jagile.jd.com      # 查看 cookie 状态和剩余有效期
+bh-auth refresh jagile.jd.com    # 强制从浏览器重新读取
+bh-auth clear jagile.jd.com      # 清除缓存
 ```
 
 ---
@@ -211,12 +152,13 @@ GET /api/app/list → response: [{id: "app-123"}]
 **目录结构：**
 ```
 {output_dir}/
-├── auth.py              # cookie / token 获取与缓存
 ├── {domain}.py          # 按业务域分组，每个录制请求一个函数 + 一个 CLI 子命令
 ├── run_all.py           # 串联所有步骤的完整流程
 ├── SKILL.md             # AI agent 使用说明（Step 8 生成）
-└── README.md            # 人类可读的安装和使用说明
+└── README.md            # 安装和使用说明
 ```
+
+注意：**不生成 auth.py**，鉴权统一由 `browser_record.auth` 提供。
 
 **代码规范：**
 
@@ -230,9 +172,10 @@ GET /api/app/list → response: [{id: "app-123"}]
 """
 import argparse, json
 import httpx
-from auth import auth_headers
+from browser_record.auth import auth_headers
 
 BASE_URL = "https://jagile.jd.com"
+DOMAIN = "jagile.jd.com"
 
 
 def list_envs() -> list:
@@ -243,10 +186,7 @@ def list_envs() -> list:
     """
     resp = httpx.get(
         f"{BASE_URL}/api/env/list",
-        headers={
-            **auth_headers(),
-            "Accept": "application/json",
-        },
+        headers={**auth_headers(DOMAIN), "Accept": "application/json"},
     )
     resp.raise_for_status()
     return resp.json()["data"]
@@ -263,7 +203,7 @@ def list_apps(env_id: str) -> list:
     resp = httpx.get(
         f"{BASE_URL}/api/app/list",
         params={"envId": env_id},
-        headers={**auth_headers(), "Accept": "application/json"},
+        headers={**auth_headers(DOMAIN), "Accept": "application/json"},
     )
     resp.raise_for_status()
     return resp.json()["data"]

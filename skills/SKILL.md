@@ -20,6 +20,13 @@
 2. **安装工具**：
    ```bash
    pip install browser-record-and-play
+   # 包含 bh-record（录制）和 bh-auth（鉴权管理）两个命令
+   ```
+
+3. **验证鉴权（可选）**：
+   ```bash
+   bh-auth check jagile.jd.com     # 检查 cookie 状态
+   bh-auth refresh jagile.jd.com   # 强制重新读取
    ```
 
 ---
